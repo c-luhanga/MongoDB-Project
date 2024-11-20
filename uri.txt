@@ -1,0 +1,1 @@
+mongodb+srv://charlesluhanga:UTF5mpM0NDqBhxHA@cluster0.ugvhc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
