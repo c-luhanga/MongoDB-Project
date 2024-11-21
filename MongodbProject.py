@@ -13,9 +13,20 @@ MIN_PRODUCTS = 1
 MAX_PRODUCTS = 5
 MIN_REPEAT = 1
 MAX_REPEAT = 5
-REVIEW_PROB = 0.01  # Reduced to 1% to achieve around 5% of receipts
+REVIEW_PROB = 0.05  # Exactly 5% chance per receipt
 MIN_AGE = 18
 MAX_AGE = 75
+DEFAULT_PURCHASE_PROB = 0.1
+DEFAULT_MIN_PRODUCTS = 1
+DEFAULT_MAX_PRODUCTS = 5
+DEFAULT_MIN_QUANTITY = 1
+DEFAULT_MAX_QUANTITY = 5
+DEFAULT_REVIEW_PROB = 0.01
+DEFAULT_AGE = 18
+DEFAULT_STREET = ''
+DEFAULT_CITY = ''
+DEFAULT_STATE = ''
+DEFAULT_FAVORITES = []
 
 class Customer:
 
@@ -51,10 +62,11 @@ class Customer:
         for _ in range(num_receipts):
             if rng.random() <= self.purchaseProb:
                 receipt = {
-                    "customerId": self.id,
-                    "purchaseDate": date,
+                    "customer_id": str(self.id),
+                    "date": date,
+                    "lineitems": [],
                     "total": 0,
-                    "lineItems": []
+                    "_internal": []  # Hidden list for validation
                 }
 
                 num_products = rng.randint(self.minProducts, self.maxProducts)
@@ -67,29 +79,46 @@ class Customer:
                     extended_price = price * quantity
                     total_amount += extended_price
 
-                    line_item = {
-                        "lineNum": line_num,
+                    # Visible line item
+                    visible_line_item = {
                         "productId": product["_id"],
-                        "qty": quantity,
+                        "price": price,
+                        "quantity": quantity
+                    }
+                    receipt["lineitems"].append(visible_line_item)
+
+                    # Hidden line item for validation
+                    internal_line_item = {
                         "extPrice": extended_price
                     }
-                    receipt["lineItems"].append(line_item)
-
-                    if rng.random() <= self.reviewProb:
-                        if product["_id"] not in product_updates:
-                            product_updates[product["_id"]] = []
-                        product_updates[product["_id"]].append({
-                            "customerId": self.id,
-                            "score": rng.randint(1, 5),
-                            "comment": "This is a standard review comment."
-                        })
+                    receipt["_internal"].append(internal_line_item)
 
                 receipt["total"] = total_amount
                 receipt_bulk.append(receipt)
 
+                # Add review at receipt level with exactly 5% probability
+                if rng.random() <= REVIEW_PROB:
+                    # Pick a random product from this receipt
+                    reviewed_item = rng.choice(receipt["lineitems"])
+                    product_id = reviewed_item["productId"]
+                    
+                    if product_id not in product_updates:
+                        product_updates[product_id] = []
+                    product_updates[product_id].append({
+                        "customerId": self.id,
+                        "score": rng.randint(1, 5),
+                        "comment": "This is a standard review comment."
+                    })
+
         if receipt_bulk:
             receipts.insert_many(receipt_bulk)
+            # Update customer's last visit date
+            db['customers'].update_one(
+                {"_id": self.id},
+                {"$set": {"last_visit": date}}
+            )
 
+        # Batch update products with ratings
         for product_id, ratings in product_updates.items():
             products_collection.update_one(
                 {"_id": product_id},
@@ -226,19 +255,19 @@ def run_simulation(
     for customer_data in customer_collection.find():
         customer_dict = {
             '_id': customer_data['_id'],
-            'lastName': customer_data.get('lastName', ''),
-            'firstName': customer_data.get('firstName', ''),
-            'purchaseProb': customer_data.get('purchaseProb', 0.5),
-            'minProducts': customer_data.get('minProducts', 1),
-            'maxProducts': customer_data.get('maxProducts', 5),
-            'minQuantity': customer_data.get('minQuantity', 1),
-            'maxQuantity': customer_data.get('maxQuantity', 5),
-            'reviewProb': customer_data.get('reviewProb', 0.05),
-            'age': customer_data.get('age', 25),
-            'street': customer_data.get('street', ''),
-            'city': customer_data.get('city', ''),
-            'state': customer_data.get('state', ''),
-            'favorites': customer_data.get('favorites', [])
+            'lastName': customer_data.get('lastName', DEFAULT_STREET),
+            'firstName': customer_data.get('firstName', DEFAULT_CITY),
+            'purchaseProb': customer_data.get('purchaseProb', DEFAULT_PURCHASE_PROB),
+            'minProducts': customer_data.get('minProducts', DEFAULT_MIN_PRODUCTS),
+            'maxProducts': customer_data.get('maxProducts', DEFAULT_MAX_PRODUCTS),
+            'minQuantity': customer_data.get('minQuantity', DEFAULT_MIN_QUANTITY),
+            'maxQuantity': customer_data.get('maxQuantity', DEFAULT_MAX_QUANTITY),
+            'reviewProb': customer_data.get('reviewProb', DEFAULT_REVIEW_PROB),
+            'age': customer_data.get('age', DEFAULT_AGE),
+            'street': customer_data.get('street', DEFAULT_STREET),
+            'city': customer_data.get('city', DEFAULT_CITY),
+            'state': customer_data.get('state', DEFAULT_STATE),
+            'favorites': customer_data.get('favorites', DEFAULT_FAVORITES)
         }
         customers.append(Customer(**customer_dict))
 
@@ -276,6 +305,11 @@ def main():
     customer_collection = mongo_db["customers"]
     receipt_collection = mongo_db["receipts"]
 
+    # drop all collections
+    product_collection.drop()
+    customer_collection.drop()
+    receipt_collection.drop()
+
     if product_collection.count_documents({}) == 0:
         add_products(product_collection)
         print("Products initialized")
@@ -299,7 +333,8 @@ def main():
             'street': c.street,
             'city': c.city,
             'state': c.state,
-            'favorites': c.favorites
+            'favorites': c.favorites,
+            'last_visit': None  # Initialize with None
         } for c in customers])
         print("Customers initialized")
 
@@ -309,7 +344,8 @@ def main():
     # Clear ratings from products
     product_collection.update_many({}, {"$set": {"ratings": []}})
     print("Product ratings cleared")
-
+    
+    time1 = datetime.now()
     args = parse_arguments()
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
@@ -317,42 +353,74 @@ def main():
         mongo_client, start_date, end_date, customer_collection, 
         product_collection
     )
+    time2 = datetime.now()
+    duration = (time2 - time1).total_seconds()
+    print(f"Simulation took {duration:.2f} seconds")
+
+    # print first product
+    print("First product:")
+    pprint(product_collection.find_one())
+
+    #print first customer
+    print("First customer:")
+    pprint(customer_collection.find_one())
+
+    #print first receipt
+    print("First receipt:")
+    pprint(receipt_collection.find_one(), width=80)
     
-    print("Number of receipts: ", receipt_collection.count_documents({}))
+    # Validate receipt totals
+    for receipt in receipt_collection.find():
+        total = sum([line["extPrice"] for line in receipt["lineitems"]])
+        assert total == receipt["total"]
+    print("All receipts have the correct totals")
 
-    pipeline = [
-        {"$unwind": "$lineItems"},
-        {"$count": "totalLineItems"}
-    ]
-    print(
-        "Number of line items: ", 
-        list(receipt_collection.aggregate(pipeline))[0]["totalLineItems"]
-    )
+    # Validate last visit dates
+    for customer in customer_collection.find():
+        last_visit = receipt_collection.find_one(
+            {"customerId": customer["_id"]},
+            sort=[("purchaseDate", pymongo.DESCENDING)]
+        )
+        if last_visit:
+            assert customer.get("last_visit") == last_visit["purchaseDate"]
+    print("All customer last_visit dates updated correctly")
 
-    pipeline2 = [
-        {"$unwind": "$ratings"},
-        {"$count": "totalRatings"}
-    ]
-    total_ratings = list(product_collection.aggregate(pipeline2))[0]["totalRatings"]
+    # Calculate line item statistics
+    total_lineitems = list(receipt_collection.aggregate([
+        {"$unwind": "$lineitems"},
+        {"$count": "total"}
+    ]))[0]["total"]
+    
+    rate = total_lineitems / duration
+    print(f"Generated {total_lineitems} lineitems in {duration:.2f} seconds "
+          f"({rate:.2f} per sec)")
+
+    # Calculate rating statistics
     total_receipts = receipt_collection.count_documents({})
-    print(
-        "Number of ratings: ", total_ratings,
-        " ratings make up", 
-        f"{(total_ratings / total_receipts) * 100:.2f}% of the number of receipts."
-    )
-
-    pipeline3 = [
+    total_ratings = list(product_collection.aggregate([
         {"$unwind": "$ratings"},
-        {"$group": {"_id": "$ratings.customerId", "avgScore": {"$avg": "$ratings.score"}}},
-        {"$sort": {"avgScore": -1}},
+        {"$count": "total"}
+    ]))[0]["total"]
+    
+    rating_percentage = (total_ratings / total_receipts) * 100
+    print(f"Generated {total_ratings} ratings over {total_receipts} receipts "
+          f"({rating_percentage:.2f}%)")
+
+    # Find customer with most reviews
+    pipeline = [
+        {"$unwind": "$ratings"},
+        {"$group": {
+            "_id": "$ratings.customerId",
+            "count": {"$sum": 1},
+            "avgScore": {"$avg": "$ratings.score"}
+        }},
+        {"$sort": {"count": -1}},
         {"$limit": 1}
     ]
-    print(
-        "Average score given by the customer who gave the most ratings: ", 
-        list(product_collection.aggregate(pipeline3))[0]["avgScore"]
-    )
-
-    print("Data generation and insertion complete.")
+    top_reviewer = list(product_collection.aggregate(pipeline))[0]
+    print(f"Customer {top_reviewer['_id']} left the most reviews "
+          f"({top_reviewer['count']}), with an average rating of "
+          f"{top_reviewer['avgScore']:.2f}")
 
 if __name__ == "__main__":
     main()
