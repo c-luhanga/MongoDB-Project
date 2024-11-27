@@ -13,7 +13,7 @@ MIN_PRODUCTS = 1
 MAX_PRODUCTS = 5
 MIN_REPEAT = 1
 MAX_REPEAT = 5
-REVIEW_PROB = 0.05  # Exactly 5% chance per receipt
+REVIEW_PROB = 0.06  # Exactly 5% chance per receipt
 MIN_AGE = 18
 MAX_AGE = 75
 DEFAULT_PURCHASE_PROB = 0.1
@@ -26,7 +26,6 @@ DEFAULT_AGE = 18
 DEFAULT_STREET = ''
 DEFAULT_CITY = ''
 DEFAULT_STATE = ''
-DEFAULT_FAVORITES = []
 
 class Customer:
 
@@ -55,7 +54,7 @@ class Customer:
         receipts = db['receipts']
         products_collection = db['products']
 
-        num_receipts = rng.randint(1, 5)
+        num_receipts = rng.randint(1, 1)
         receipt_bulk = []
         product_updates = {}
 
@@ -87,11 +86,11 @@ class Customer:
                     }
                     receipt["lineitems"].append(visible_line_item)
 
-                    # Hidden line item for validation
-                    internal_line_item = {
-                        "extPrice": extended_price
-                    }
-                    receipt["_internal"].append(internal_line_item)
+                    # # Hidden line item for validation
+                    # internal_line_item = {
+                    #     "extPrice": extended_price
+                    # }
+                    # receipt["_internal"].append(internal_line_item)
 
                 receipt["total"] = total_amount
                 receipt_bulk.append(receipt)
@@ -257,17 +256,22 @@ def run_simulation(
             '_id': customer_data['_id'],
             'lastName': customer_data.get('lastName', DEFAULT_STREET),
             'firstName': customer_data.get('firstName', DEFAULT_CITY),
-            'purchaseProb': customer_data.get('purchaseProb', DEFAULT_PURCHASE_PROB),
-            'minProducts': customer_data.get('minProducts', DEFAULT_MIN_PRODUCTS),
-            'maxProducts': customer_data.get('maxProducts', DEFAULT_MAX_PRODUCTS),
-            'minQuantity': customer_data.get('minQuantity', DEFAULT_MIN_QUANTITY),
-            'maxQuantity': customer_data.get('maxQuantity', DEFAULT_MAX_QUANTITY),
+            'purchaseProb': customer_data.get('purchaseProb',
+                                               DEFAULT_PURCHASE_PROB),
+            'minProducts': customer_data.get('minProducts', 
+                                             DEFAULT_MIN_PRODUCTS),
+            'maxProducts': customer_data.get('maxProducts', 
+                                             DEFAULT_MAX_PRODUCTS),
+            'minQuantity': customer_data.get('minQuantity', 
+                                             DEFAULT_MIN_QUANTITY),
+            'maxQuantity': customer_data.get('maxQuantity', 
+                                             DEFAULT_MAX_QUANTITY),
             'reviewProb': customer_data.get('reviewProb', DEFAULT_REVIEW_PROB),
             'age': customer_data.get('age', DEFAULT_AGE),
             'street': customer_data.get('street', DEFAULT_STREET),
             'city': customer_data.get('city', DEFAULT_CITY),
             'state': customer_data.get('state', DEFAULT_STATE),
-            'favorites': customer_data.get('favorites', DEFAULT_FAVORITES)
+            'favorites': customer_data.get('favorites', [])
         }
         customers.append(Customer(**customer_dict))
 
@@ -371,8 +375,11 @@ def main():
     
     # Validate receipt totals
     for receipt in receipt_collection.find():
-        total = sum([line["extPrice"] for line in receipt["lineitems"]])
-        assert total == receipt["total"]
+        total = sum([
+            line["price"] * line["quantity"] 
+            for line in receipt["lineitems"]
+        ])
+        assert abs(total - receipt["total"]) < 0.01  # Use small epsilon for float comparison
     print("All receipts have the correct totals")
 
     # Validate last visit dates
@@ -421,6 +428,41 @@ def main():
     print(f"Customer {top_reviewer['_id']} left the most reviews "
           f"({top_reviewer['count']}), with an average rating of "
           f"{top_reviewer['avgScore']:.2f}")
+
+    # Customer purchase statistics
+    pipeline = [
+        {"$group": {
+            "_id": "$customer_id",
+            "num_receipts": {"$sum": 1},
+            "avg_items": {"$avg": {"$size": "$lineitems"}}
+        }},
+        {"$sort": {"num_receipts": -1}}
+    ]
+
+    stats = list(receipt_collection.aggregate(pipeline))
+    num_buyers = len(stats)
+
+    print("\nPurchase Statistics:")
+    print(f"{num_buyers} out of {NUM_CUSTOMERS} customers made purchases")
+    print("\nTop 5 customers by number of receipts:")
+    print("CustomerID | Receipts | Avg Items")  # Shortened header
+    print("-" * 35)  # Reduced separator length
+    for stat in stats[:5]:
+        print(
+            f"{stat['_id']:10} | "
+            f"{stat['num_receipts']:8} | "
+            f"{stat['avg_items']:,.1f}"
+        )
+
+    total_receipts = sum(s['num_receipts'] for s in stats)
+    avg_items = (
+        sum(s['avg_items'] * s['num_receipts'] for s in stats) / 
+        total_receipts
+    )
+    print(
+        f"\nOverall average items per receipt: "
+        f"{avg_items:.1f}"
+    )
 
 if __name__ == "__main__":
     main()
